@@ -1,0 +1,51 @@
+services:
+  - type: web
+    name: seatfinder-api
+    runtime: node
+    plan: starter
+    branch: main
+    buildCommand: NODE_ENV=development pnpm install && pnpm build
+    startCommand: pnpm start:render
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: API_PORT
+        value: 10000
+      - key: DATABASE_URL
+        fromDatabase:
+          name: seatfinder-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: QR_SECRET
+        generateValue: true
+      - key: JWT_EXPIRES_IN
+        value: 15m
+      - key: JWT_REFRESH_EXPIRES_IN
+        value: 7d
+      - key: CHECKIN_TIMEOUT_MINUTES
+        value: 60
+      - key: CHECKIN_MAX_EXTENSIONS
+        value: 3
+      - key: CHECKIN_GRACE_SECONDS
+        value: 60
+      - key: CHECKIN_NOTIFY_BEFORE_MINUTES
+        value: 10
+      - key: FAVORITE_NOTIFY_OCCUPANCY_PCT
+        value: 80
+      - key: FAVORITE_NOTIFY_COOLDOWN_MINUTES
+        value: 30
+      - key: CORS_ORIGIN
+        value: '*'
+      - key: RATE_LIMIT_TTL
+        value: 60
+      - key: RATE_LIMIT_MAX
+        value: 100
+
+databases:
+  - name: seatfinder-db
+    databaseName: seatfinder
+    user: seatfinder
+    plan: starter

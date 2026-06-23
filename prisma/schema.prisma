@@ -1,0 +1,454 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  STUDENT
+  ADMIN
+  SUPER_ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  BANNED
+  DELETED
+}
+
+enum CheckinEndReason {
+  CHECKOUT
+  TIMEOUT
+  ADMIN
+}
+
+enum ReportType {
+  BELONGINGS
+  INCORRECT_QR
+  OTHER
+}
+
+enum ReportStatus {
+  PENDING
+  RESOLVED
+  DISMISSED
+}
+
+model User {
+  id           String      @id @default(cuid())
+  email        String      @unique
+  passwordHash String
+  role         UserRole    @default(STUDENT)
+  status       UserStatus  @default(ACTIVE)
+  /// Optional display name; falls back to the local part of the email if empty.
+  displayName  String?
+  /// Hex color for the user's initial-avatar (e.g. "#0EA5E9"). Optional —
+  /// the mobile client falls back to a deterministic hash if null.
+  avatarColor  String?
+  /// Short user-supplied bio shown on the profile (max ~280 chars enforced
+  /// at the application layer).
+  bio          String?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  banReason    String?
+  banExpiresAt DateTime?
+
+  checkins        Checkin[]
+  reports         Report[]
+  auditLogs       AuditLog[]
+  resolvedReports Report[]     @relation("ResolvedReports")
+  bannedUsers     User[]       @relation("BannedUsers")
+  bannedBy        User?        @relation("BannedUsers", fields: [bannedById], references: [id])
+  bannedById      String?
+  seatReviews     SeatReview[]
+  favorites       Favorite[]
+  pushTokens      PushToken[]
+
+  // Friends / social
+  friendshipsLow      Friendship[]    @relation("FriendshipLow")
+  friendshipsHigh     Friendship[]    @relation("FriendshipHigh")
+  sentFriendRequests  FriendRequest[] @relation("SentFriendRequests")
+  recvFriendRequests  FriendRequest[] @relation("RecvFriendRequests")
+
+  // Study groups
+  ownedGroups         StudyGroup[]        @relation("GroupOwner")
+  groupMemberships    StudyGroupMember[]
+  sentGroupInvites    GroupInvite[]       @relation("SentGroupInvites")
+  recvGroupInvites    GroupInvite[]       @relation("RecvGroupInvites")
+
+  // Live Activities (iOS Dynamic Island)
+  liveActivityTokens  LiveActivityToken[]
+
+  @@index([email])
+  @@index([status])
+  @@map("users")
+}
+
+model Building {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  floors Floor[]
+
+  @@map("buildings")
+}
+
+model Floor {
+  id         String   @id @default(cuid())
+  buildingId String
+  index      Int      // Floor number (e.g., 2, 3, 4)
+  name       String?  // Optional name like "Ground Floor"
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  building Building @relation(fields: [buildingId], references: [id], onDelete: Cascade)
+  zones    Zone[]
+
+  @@unique([buildingId, index])
+  @@index([buildingId])
+  @@map("floors")
+}
+
+model Zone {
+  id        String   @id @default(cuid())
+  floorId   String
+  name      String
+  capacity  Int
+  qrCodeId  String   @unique
+  qrCodeUrl String?  // Path to generated QR code image
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  floor     Floor      @relation(fields: [floorId], references: [id], onDelete: Cascade)
+  seats     Seat[]
+  checkins  Checkin[]
+  reports   Report[]
+  favorites Favorite[]
+
+  @@index([floorId])
+  @@index([qrCodeId])
+  @@map("zones")
+}
+
+model Seat {
+  id        String   @id @default(cuid())
+  zoneId    String
+  label     String   // e.g., "A1", "A2"
+  qrCodeId  String   @unique
+  qrCodeUrl String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  zone     Zone         @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+  checkins Checkin[]
+  reports  Report[]
+  reviews  SeatReview[]
+
+  @@unique([zoneId, label])
+  @@index([zoneId])
+  @@index([qrCodeId])
+  @@map("seats")
+}
+
+model Checkin {
+  id             String             @id @default(cuid())
+  userId         String
+  zoneId         String
+  seatId         String?
+  startedAt      DateTime           @default(now())
+  endedAt        DateTime?
+  endedReason    CheckinEndReason?
+  expiresAt      DateTime?          // Session expiry time (1 hour from start/extension)
+  extendedCount  Int                @default(0) // Number of times session was extended
+  notifiedAt     DateTime?          // When 50-min notification was sent
+  pomodoroUsed   Boolean            @default(false) // Whether user started pomodoro
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  user   User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  zone   Zone        @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+  seat   Seat?       @relation(fields: [seatId], references: [id], onDelete: SetNull)
+  review SeatReview?
+
+  @@index([userId])
+  @@index([zoneId])
+  @@index([seatId])
+  @@index([startedAt])
+  @@index([endedAt])
+  @@index([expiresAt])
+  @@map("checkins")
+}
+
+model Report {
+  id         String       @id @default(cuid())
+  userId     String?
+  zoneId     String
+  seatId     String?
+  type       ReportType
+  message    String?
+  status     ReportStatus @default(PENDING)
+  createdAt  DateTime     @default(now())
+  resolvedAt DateTime?
+  resolvedBy String?
+  resolution String?
+
+  user       User?  @relation(fields: [userId], references: [id], onDelete: SetNull)
+  zone       Zone   @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+  seat       Seat?  @relation(fields: [seatId], references: [id], onDelete: SetNull)
+  resolver   User?  @relation("ResolvedReports", fields: [resolvedBy], references: [id], onDelete: SetNull)
+
+  @@index([zoneId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("reports")
+}
+
+model Setting {
+  key       String   @id
+  value     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("settings")
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  actorId   String
+  action    String
+  target    String
+  payload   String?  // JSON string
+  createdAt DateTime @default(now())
+
+  actor User @relation(fields: [actorId], references: [id], onDelete: Cascade)
+
+  @@index([actorId])
+  @@index([createdAt])
+  @@index([action])
+  @@map("audit_logs")
+}
+
+model SeatReview {
+  id         String   @id @default(cuid())
+  userId     String
+  seatId     String
+  checkinId  String   @unique // One review per check-in
+  comfort    Int      // 1-5 stars
+  lighting   Int      // 1-5 stars
+  noise      Int      // 1-5 stars
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  seat    Seat    @relation(fields: [seatId], references: [id], onDelete: Cascade)
+  checkin Checkin @relation(fields: [checkinId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, seatId]) // User can only review each seat once
+  @@index([seatId])
+  @@index([userId])
+  @@map("seat_reviews")
+}
+
+/// User-favorited zones. Powers "watch" notifications when occupancy drops.
+model Favorite {
+  id        String   @id @default(cuid())
+  userId    String
+  zoneId    String
+  createdAt DateTime @default(now())
+
+  /// Last time the user was push-notified that this favorite became available.
+  /// Used to debounce repeated alerts.
+  lastNotifiedAt DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  zone Zone @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, zoneId])
+  @@index([userId])
+  @@index([zoneId])
+  @@map("favorites")
+}
+
+enum PushPlatform {
+  IOS
+  ANDROID
+  WEB
+}
+
+/// Expo push notification tokens.
+/// One user can register multiple devices; tokens are upserted by value.
+model PushToken {
+  id         String        @id @default(cuid())
+  userId     String
+  token      String        @unique // Expo push token (ExponentPushToken[...])
+  platform   PushPlatform?
+  deviceName String?
+  createdAt  DateTime      @default(now())
+  lastSeenAt DateTime      @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("push_tokens")
+}
+
+// ─── Friends ──────────────────────────────────────────────────────────────
+
+enum FriendRequestStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  CANCELLED
+}
+
+/// Mutual friendship. Stored once per pair using lexicographic ordering of
+/// userIds (`userIdLow < userIdHigh`) so we can do `findUnique` on the pair
+/// instead of OR-querying.
+model Friendship {
+  id          String   @id @default(cuid())
+  userIdLow   String
+  userIdHigh  String
+  createdAt   DateTime @default(now())
+
+  userLow  User @relation("FriendshipLow",  fields: [userIdLow],  references: [id], onDelete: Cascade)
+  userHigh User @relation("FriendshipHigh", fields: [userIdHigh], references: [id], onDelete: Cascade)
+
+  @@unique([userIdLow, userIdHigh])
+  @@index([userIdLow])
+  @@index([userIdHigh])
+  @@map("friendships")
+}
+
+/// Directional friend request. Resolves into a `Friendship` row on accept.
+model FriendRequest {
+  id           String              @id @default(cuid())
+  fromUserId   String
+  toUserId     String
+  status       FriendRequestStatus @default(PENDING)
+  createdAt    DateTime            @default(now())
+  respondedAt  DateTime?
+
+  fromUser User @relation("SentFriendRequests", fields: [fromUserId], references: [id], onDelete: Cascade)
+  toUser   User @relation("RecvFriendRequests", fields: [toUserId],   references: [id], onDelete: Cascade)
+
+  /// Only one PENDING request can exist between two users in either direction.
+  /// The application layer enforces this via a query before insert; we still
+  /// keep a directional uniqueness so UI replays don't dupe.
+  @@unique([fromUserId, toUserId, status])
+  @@index([toUserId, status])
+  @@index([fromUserId, status])
+  @@map("friend_requests")
+}
+
+// ─── Study Groups ─────────────────────────────────────────────────────────
+
+enum GroupMemberRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+enum GroupInviteStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  CANCELLED
+  EXPIRED
+}
+
+/// A user-created study group. `joinCode` is a short, human-typeable token
+/// (uppercase alphanumeric) so members can join without an explicit invite.
+model StudyGroup {
+  id          String   @id @default(cuid())
+  ownerId     String
+  name        String
+  description String?
+  /// Public groups appear in search; private groups require code or invite.
+  isPublic    Boolean  @default(false)
+  /// 6-char alphanumeric, unique. Members join by typing this.
+  joinCode    String   @unique
+  maxMembers  Int      @default(20)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  owner   User                @relation("GroupOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  members StudyGroupMember[]
+  invites GroupInvite[]
+
+  @@index([ownerId])
+  @@index([isPublic])
+  @@map("study_groups")
+}
+
+model StudyGroupMember {
+  id        String          @id @default(cuid())
+  groupId   String
+  userId    String
+  role      GroupMemberRole @default(MEMBER)
+  joinedAt  DateTime        @default(now())
+
+  group StudyGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user  User       @relation(fields: [userId],  references: [id], onDelete: Cascade)
+
+  @@unique([groupId, userId])
+  @@index([userId])
+  @@index([groupId])
+  @@map("study_group_members")
+}
+
+model GroupInvite {
+  id           String            @id @default(cuid())
+  groupId      String
+  inviterId    String
+  inviteeId    String
+  status       GroupInviteStatus @default(PENDING)
+  createdAt    DateTime          @default(now())
+  respondedAt  DateTime?
+
+  group   StudyGroup @relation(fields: [groupId],   references: [id], onDelete: Cascade)
+  inviter User       @relation("SentGroupInvites", fields: [inviterId], references: [id], onDelete: Cascade)
+  invitee User       @relation("RecvGroupInvites", fields: [inviteeId], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, inviteeId, status])
+  @@index([inviteeId, status])
+  @@map("group_invites")
+}
+
+// ─── iOS Live Activity (Dynamic Island) ───────────────────────────────────
+
+/// APNs push tokens issued by ActivityKit. One row per active activity.
+/// Cleared when the activity ends. Distinct from regular `PushToken` because
+/// Live Activity tokens go directly to Apple via APNs, not via Expo.
+model LiveActivityToken {
+  id              String   @id @default(cuid())
+  userId          String
+  /// Foreign key to the active checkin this activity is tracking.
+  /// One activity per checkin; deleting the checkin tears it down.
+  checkinId       String   @unique
+  /// APNs push token (hex string from ActivityKit).
+  pushToken       String
+  /// Optional high-frequency-update token from iOS 17.2+.
+  /// If present we may push more often (e.g. every minute) rather than only
+  /// on lifecycle events.
+  frequencyToken  String?
+  createdAt       DateTime @default(now())
+  /// Last time we sent an APNs update; used to back off on rate-limit errors.
+  lastPushedAt    DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("live_activity_tokens")
+}
